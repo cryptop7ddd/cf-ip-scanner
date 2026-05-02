@@ -1,31 +1,75 @@
-name: Cloudflare IP Auto Setter
-on:
-  schedule:
-    - cron: '0 */6 * * *' # 每6小时运行一次
-  workflow_dispatch: # 支持手动点击运行
+const https = require('https');
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4 # 升级到最新版本v4
+// 从 GitHub Secrets 获取配置
+const CF_API_TOKEN = process.env.CF_API_TOKEN;
+const CF_ZONE_ID = process.env.CF_ZONE_ID;
+const CF_DOMAIN = process.env.CF_DOMAIN;
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4 # 升级到最新版本v4
-        with:
-          node-version: '20' # 使用稳定的Node 20环境
+async function updateCloudflare(ip) {
+    const data = JSON.stringify({
+        type: 'A',
+        name: CF_DOMAIN,
+        content: ip,
+        ttl: 60,
+        proxied: false // 优选IP必须关闭小云朵
+    });
 
-      - name: Run Cloudflare Scan
-        env:
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
-          CF_DOMAIN: ${{ secrets.CF_DOMAIN }}
-        run: |
-          # 检查文件是否存在
-          if [ -f "script.js" ]; then
-            node script.js
-          else
-            echo "Error: script.js not found!"
-            exit 1
-          fi
+    // 1. 先获取该域名的记录 ID
+    const options = {
+        hostname: 'api.cloudflare.com',
+        path: `/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${CF_DOMAIN}`,
+        method: 'GET',
+        headers: {
+            'Authorization': `Bearer ${CF_API_TOKEN}`,
+            'Content-Type': 'application/json'
+        }
+    };
+
+    const getReq = https.request(options, res => {
+        let body = '';
+        res.on('data', d => body += d);
+        res.on('end', () => {
+            const result = JSON.parse(body);
+            if (result.result && result.result.length > 0) {
+                const recordId = result.result[0].id;
+                // 2. 执行更新
+                executeChange(recordId, ip);
+            } else {
+                console.error("未找到域名记录，请先在CF手动添加一条名为 speed 的A记录");
+            }
+        });
+    });
+    getReq.end();
+}
+
+function executeChange(id, ip) {
+    const data = JSON.stringify({
+        type: 'A',
+        name: CF_DOMAIN,
+        content: ip,
+        ttl: 60,
+        proxied: false
+    });
+
+    const options = {
+        hostname: 'api.cloudflare.com',
+        path: `/client/v4/zones/${CF_ZONE_ID}/dns_records/${id}`,
+        method: 'PUT',
+        headers: {
+            'Authorization': `Bearer ${CF_API_TOKEN}`,
+            'Content-Type': 'application/json'
+        }
+    };
+
+    const putReq = https.request(options, res => {
+        res.on('data', d => process.stdout.write(d));
+    });
+    putReq.write(data);
+    putReq.end();
+}
+
+// 模拟测速并选择一个稳定的 Cloudflare IP (这里使用固定的官方优选演示，实际会根据测速逻辑调整)
+// 提示：你可以自行更换为你认为快的IP段
+const bestIP = "1.0.0.1"; 
+console.log(`正在将域名 ${CF_DOMAIN} 指向优选IP: ${bestIP}`);
+updateCloudflare(bestIP);
